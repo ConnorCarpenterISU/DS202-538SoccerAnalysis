@@ -1,0 +1,372 @@
+---
+title: "Five-Thirty-Eight Club Soccer Predictions"
+author: "Team 3: Syed Hasan, Connor Carpenter, Orion Hunter"
+date: "4/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(car)  
+library(pROC)
+library(ResourceSelection)
+soccer <- read.csv("spi_matches.csv")
+``` 
+
+```{r}
+str(soccer)
+```
+
+
+Questions Raised:
+
+- How do the SPI's of top leagues compare?
+
+- At what level do international competitions play at?
+
+- How is a single league distributed in terms of SPI? 
+
+- Can we predict a win?
+  - If so, what factors are significant?
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Challenge: Format of rows is not useful for us
+
+Solution: We must transform
+
+```{r}
+library(lubridate)
+soccer$date <- ymd(soccer$date)
+```
+
+Lubridate can be used to transform the date column from a factor object to a date object
+
+```{r}
+library(tidyr)
+library(plotly)
+
+id <- rownames(soccer)
+soccer <- cbind(id = id, soccer)
+
+names(soccer)[1] <- "match_id"
+
+soccer <-
+  unique(soccer %>% pivot_longer(team1:team2, names_to = "HoA", values_to = "team"))
+
+soccer$HoA[soccer$HoA == "team1"] <- "home"
+soccer$HoA[soccer$HoA == "team2"] <- "away"
+
+soccer$spi <- soccer$spi2
+soccer$spiOpp <- soccer$spi1
+soccer$spi[soccer$HoA == "home"] <-
+  soccer$spi1[soccer$HoA == "home"]
+soccer$spiOpp[soccer$HoA == "home"] <-
+  soccer$spi2[soccer$HoA == "away"]
+soccer <- soccer %>% select(-spi1,-spi2)
+
+soccer$probWin <- soccer$prob1
+soccer$probLoss <- soccer$prob2
+soccer$probWin[soccer$HoA == "away"] <-
+  soccer$prob2[soccer$HoA == "away"]
+soccer$probLoss[soccer$HoA == "away"] <-
+  soccer$prob1[soccer$HoA == "home"]
+soccer <- soccer %>% select(-prob1,-prob2)
+
+soccer$score <- soccer$score1
+soccer$scoreOpp <- soccer$score2
+soccer$score[soccer$HoA == "away"] <-
+  soccer$score2[soccer$HoA == "away"]
+soccer$scoreOpp[soccer$HoA == "away"] <-
+  soccer$score1[soccer$HoA == "home"]
+soccer <- soccer %>% select(-score1,-score2)
+
+soccer$proj_score <- soccer$proj_score1
+soccer$proj_scoreOpp <- soccer$proj_score2
+soccer$proj_score[soccer$HoA == "away"] <-
+  soccer$proj_score2[soccer$HoA == "away"]
+soccer$proj_scoreOpp[soccer$HoA == "away"] <-
+  soccer$proj_score1[soccer$HoA == "home"]
+soccer <- soccer %>% select(-proj_score1,-proj_score2)
+
+soccer$importance <- soccer$importance1
+soccer$importanceOpp <- soccer$importance2
+soccer$importance[soccer$HoA == "away"] <-
+  soccer$importance2[soccer$HoA == "away"]
+soccer$importanceOpp[soccer$HoA == "away"] <-
+  soccer$importance1[soccer$HoA == "home"]
+soccer <- soccer %>% select(-importance1,-importance2)
+
+soccer$xg <- soccer$xg1
+soccer$xgOpp <- soccer$xg2
+soccer$xg[soccer$HoA == "away"] <- soccer$xg2[soccer$HoA == "away"]
+soccer$xgOpp[soccer$HoA == "away"] <-
+  soccer$xg1[soccer$HoA == "home"]
+soccer <- soccer %>% select(-xg1,-xg2)
+
+soccer$nsxg <- soccer$nsxg1
+soccer$nsxgOpp <- soccer$nsxg2
+soccer$nsxg[soccer$HoA == "away"] <-
+  soccer$nsxg2[soccer$HoA == "away"]
+soccer$nsxgOpp[soccer$HoA == "away"] <-
+  soccer$nsxg1[soccer$HoA == "home"]
+soccer <- soccer %>% select(-nsxg1,-nsxg2)
+
+soccer$IntComp <- FALSE
+soccer$IntComp[soccer$league %in% c("UEFA Champions League", "UEFA Europa League")] <-
+  TRUE
+
+soccer <- soccer %>% select(-adj_score1, -adj_score2)
+```
+
+```{r}
+str(soccer)
+```
+
+After using tools like cbind and pivot_longer, this is a much more flexible dataframe for our use
+
+```{r}
+soccer %>% group_by(league, team) %>% filter(xg > 0) %>% summarize(goals = sum(score, na.rm = TRUE),
+                                                                   xg = sum(xg, na.rm = TRUE)) %>% ggplot(aes(x = goals - xg)) + geom_histogram(color = "black", fill = "blue") + labs(title = "Test of xG Accuracy", x = "xG - Goals", y = "Number of Teams") + geom_vline(xintercept = 0)
+```
+
+
+```{r}
+soccer$YM <- format(soccer$date, "%Y-%m")
+
+leagueComp <-
+  soccer %>% group_by(league, YM) %>% summarize(spi = mean(spi)) %>% filter(
+    league %in% c(
+      "Barclays Premier League",
+      "French Ligue 1",
+      "German Bundesliga",
+      "Italy Serie A",
+      "Spanish Primera Division"
+    )
+  )
+
+leagueComp %>% ggplot(aes(x = YM, y = spi, color = league)) + geom_point() + geom_line(aes(group = league)) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + labs(
+  title = "Average SPI of Top 5 European Leagues by Month",
+  x = "Year-Month",
+  y = "SPI" ,
+  color = "League",
+  subtitle = "Excluding UEFA Competitions"
+)
+```
+
+This plot shows how the Barclays Premier League has climbed to the top the past few seasons and proven itself as one of the best leagues. It also shows the dominance of last seasons spanish teams.
+
+```{r}
+
+leagueComp <-
+  soccer %>% group_by(league, YM) %>% summarize(spi = mean(spi)) %>% filter(
+    league %in% c(
+      "Barclays Premier League",
+      "French Ligue 1",
+      "German Bundesliga",
+      "Italy Serie A",
+      "Spanish Primera Division",
+      "UEFA Champions League",
+      "UEFA Europa League"
+    )
+  )
+
+leagueComp %>% ggplot(aes(x = YM, y = spi, color = league)) + geom_point() + geom_line(aes(group = league)) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + labs(
+  title = "Average SPI of Top 5 European Leagues by Month",
+  x = "Year-Month",
+  y = "SPI" ,
+  color = "League",
+  subtitle = "Including UEFA Competitions"
+)
+```
+
+With the inclusion of international leagues, which are made up of top teams from leagues around Europe, we can see the nature of knockout tournaments. Weaker teams are phased out as the stronger teams win. Then the season resets with a wider variety of teams.
+
+```{r}
+PL1920 <-
+  soccer %>% filter(
+    league == "Barclays Premier League",
+    date > as.Date("2019-06-01"),
+    date < as.Date("2020-03-13")
+  )
+
+PL1920 %>% ggplot(aes(x = date, y = spi, color = team)) + geom_point() + geom_line(aes(group = team)) + labs(
+    title = "SPI by Team in the BPL (2019/2020 Season)",
+    x = "Date",
+    y = "SPI" ,
+    color = "Team"
+  )
+
+##ggplotly(p)
+```
+
+This plot shows the SPI's for all 20 teams in the BPL. It is hard to discern much information from this as it is very crowded, however we can see thar there are two dominant teams, Manchester City and Liverpool. There is a wide spread in the midfield and a very narrow spread toward the bottom, with one weak standout, Norwich City.
+
+```{r}
+PL1920$Top6 <- FALSE
+PL1920$Top6[PL1920$team %in% c(
+  "Arsenal",
+  "Chelsea",
+  "Liverpool",
+  "Manchester City",
+  "Manchester United",
+  "Tottenham Hotspur"
+)] <- TRUE
+
+PL1920 %>% ggplot(aes(
+    x = date,
+    y = spi,
+    color = Top6,
+    label = team
+  )) + geom_point() + geom_line(aes(group = team))  + labs(
+    title = "SPI by Team in the BPL (2019/2020 Season)",
+    x = "Date",
+    y = "SPI" ,
+    color = "Big 6 Team"
+  )
+
+##ggplotly(pTop6)
+```
+
+Besides Man. City, Liverpool, and parts of Chelsea's season, the rest of the top four are not much stronger than some midtable teams. Perhaps these teams should not be as highly regarded. Still fairly difficult to make any claims about these teams, since it is still crowded.
+
+```{r}
+PL1920 %>% filter(Top6 == TRUE) %>% ggplot(aes(x = date, y = spi, color = team)) + geom_point() + geom_line(aes(group = team)) + geom_smooth() + labs(
+    title = "SPI of Big 6 Teams in the BPL (2019/2020 Season)",
+    x = "Date",
+    y = "SPI" ,
+    color = "Team"
+  )
+
+##ggplotly(top6Only)
+```
+
+After Isolating the top 6 teams and adding a smooth layer, we can better see the trajectories of these teams. Notable features are Tottenham and Arsenal's \ drop in form throughout the season.
+
+```{r}
+PL1920$NewPro <- FALSE
+PL1920$NewPro[PL1920$team %in% c("Aston Villa", "Norwich City", "Sheffield United")] <-
+  TRUE
+
+PL1920 %>% filter(NewPro == FALSE) %>% ggplot(aes(
+    x = date,
+    y = spi,
+    label = team,
+    color = "Other"
+  )) + geom_point() + geom_line(aes(group = team, color = "Other")) + geom_point(data = PL1920 %>% filter(NewPro == TRUE), aes(x = date, y = spi, color = team)) + geom_line(data = PL1920 %>% filter(NewPro == TRUE),
+                                                                                                                                                                             aes(
+                                                                                                                                                                               x = date,
+                                                                                                                                                                               y = spi,
+                                                                                                                                                                               color = team,
+                                                                                                                                                                               group = team
+                                                                                                                                                                             )) + geom_smooth(data = PL1920 %>% filter(NewPro == TRUE), aes(x = date, y = spi, color = team)) + labs(
+                                                                                                                                                                               title = "SPI of Newly Promoted Teams in the BPL (2019/2020 Season)",
+                                                                                                                                                                               x = "Date",
+                                                                                                                                                                               y = "SPI" ,
+                                                                                                                                                                               color = "Team"
+                                                                                                                                                                             ) + scale_color_discrete(breaks = c("Aston Villa", "Norwich City", "Sheffield United", "Other"))
+
+##ggplotly(pNewPro)
+```
+
+There are many english football teams and the governing body does not want them all in one league so they use a tiered system where teams change leagues at the 
+end of the season based on performance
+
+If we monitor the strength of newly promoted teams, we can see that Sheffield United has had an excellent season in the PL, surpassing the strength of many teams. Additionally, Aston Villa had a promising start but their form fell in the second half of the season. Lastly, Norwich has not proven that the belong in the top flight.
+
+------------------
+
+Question:
+What variables help to predict Win?
+
+Challenge:
+Cleaning and encoding variables to work with this model.
+
+```{r}
+soccerModelData <- na.omit(soccer)
+
+soccerModelData$win <- FALSE
+soccerModelData$spiDiff <- 101
+soccerModelData$impDiff <- 101
+
+for (x in 1:nrow(soccerModelData)) {
+  if (soccerModelData$score[x] - soccerModelData$scoreOpp[x] > 0) {
+    soccerModelData$win[x] <- 1
+  } else{
+    soccerModelData$win[x] = 0
+    
+  }
+  if (soccerModelData$HoA[x] == "home") {
+    soccerModelData$HoA[x] = 1
+  } else{
+    soccerModelData$HoA[x] = 0
+    
+  }
+  if (soccerModelData$IntComp[x] == TRUE) {
+    soccerModelData$IntComp[x] = 1
+  } else{
+    soccerModelData$IntComp[x] = 0
+    
+  }
+  soccerModelData$spiDiff[x] <-
+    soccerModelData$spi[x] - soccerModelData$spiOpp[x]
+  soccerModelData$impDiff[x] <-
+    soccerModelData$importance[x] - soccerModelData$importanceOpp[x]
+}
+
+WinModel <-
+  glm(win ~ spiDiff + impDiff + HoA + IntComp,
+      data = soccerModelData,
+      family = binomial(link = logit))
+summary(WinModel)
+```
+
+Here we create a logistic model to predict a win based on the differnce between the two teams on both SPI and importance as well as factors of home or away and international competition.
+
+```{r}
+emptyModel <-
+  glm(win ~ 1, data = soccerModelData, family = binomial(link = logit))
+anova(emptyModel, WinModel, test = "Chisq")
+```
+
+This anova output tells us that this model helps us predict a result!
+
+```{r}
+AICModel <- step(WinModel)
+summary(AICModel)
+```
+
+This function selects a better model by eliminating unhelpful predictors. It eliminates the international competition factor therefore we do not have reason to believe that international competitions impact results.
+
+```{r}
+confusion.glm <- function(model, cutoff = 0.5) {
+  predicted <- ifelse(predict(model, type = 'response') > cutoff, 1, 0)
+  observed <- model$y
+  confusion  <- table(observed, predicted)
+  agreement <- (confusion[1, 1] + confusion[2, 2]) / sum(confusion)
+  specificity <- confusion[1, 1] / rowSums(confusion)[1]
+  sensitivity <- confusion[2, 2] / rowSums(confusion)[2]
+  list(
+    "Confusion Table" = confusion,
+    "Agreement" = agreement,
+    "Sensitivity" = sensitivity,
+    "Specificity" = specificity
+  )
+}
+
+confusion.glm(AICModel)
+```
+
+This function shows us how well our model can predict results. It ends up with just under 69% accuracy.
+
+We can conclude that the difference in SPI and importnace of the match between teams and the home or away factor helps predict the match result.
+
+```{r}
+soccer %>% group_by(league) %>% summarize(sum(score, na.rm = TRUE) - sum(xg, na.rm = TRUE))
+```
+
